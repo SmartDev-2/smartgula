@@ -22,5 +22,6 @@ return [
     'storage_bucket'     => env('FIREBASE_STORAGE_BUCKET', 'smartteam-f5e2f.firebasestorage.app'),
     'messaging_sender_id'=> env('FIREBASE_MESSAGING_SENDER_ID', '364614372910'),
     'app_id'             => env('FIREBASE_APP_ID', '1:364614372910:web:3986a91490b27f985819bf'),
+    'measurement_id'     => env('FIREBASE_MEASUREMENT_ID', 'G-CXEXLLDK6X'),
 
 ];

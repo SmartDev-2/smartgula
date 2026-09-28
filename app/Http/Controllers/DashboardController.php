@@ -26,6 +26,7 @@ class DashboardController extends Controller
             'storageBucket'     => config('firebase.storage_bucket'),
             'messagingSenderId' => config('firebase.messaging_sender_id'),
             'appId'             => config('firebase.app_id'),
+            'measurementId'     => config('firebase.measurement_id'),
         ];
 
         /**

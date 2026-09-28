@@ -1,142 +1,167 @@
 /**
- * dashboard.js
- * Monitoring Ruang Penyimpanan Gula
+ * dashboard.js — Monitoring Ruang Penyimpanan Gula (v2)
  *
- * Menggunakan Firebase Modular SDK (CDN ESM build) untuk mendengarkan
- * perubahan data sensor secara real-time tanpa perlu refresh halaman.
+ * Firebase Modular SDK (ESM CDN) + Chart.js + SVG Gauge
  *
- * Alur:
- *   Firebase RT DB → onValue(latestRef)  → updateMetricCards()
+ * Alur data:
+ *   Firebase RT DB → onValue(latestRef)  → updateMetricCards() + updateGauges()
  *   Firebase RT DB → onValue(historyRef) → updateChart() + updateTable()
  */
 
-import { initializeApp }                   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getDatabase, ref, onValue, query, orderByChild, limitToLast }
-                                            from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+import { initializeApp }                                              from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getDatabase, ref, onValue, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 
 /* ============================================================
-   1. Inisialisasi Firebase
+   1. Init Firebase
    ============================================================ */
-
-/** @type {object} Konfigurasi disuntikkan dari Blade via window.__FIREBASE_CONFIG__ */
-const firebaseConfig = window.__FIREBASE_CONFIG__;
-
-/** @type {object} Batas status disuntikkan dari Blade via window.__THRESHOLDS__ */
-const THRESHOLDS = window.__THRESHOLDS__;
-
-const app = initializeApp(firebaseConfig);
+const app = initializeApp(window.__FIREBASE_CONFIG__);
 const db  = getDatabase(app);
 
-/* ============================================================
-   2. Konstanta & referensi DOM
-   ============================================================ */
-
-const DEVICE_PATH   = window.__DEVICE_PATH__ || "sensor/device_01";
-const HISTORY_LIMIT = 50; // tampilkan maks N data terakhir di grafik & tabel
-
-const elSuhu       = document.getElementById("val-suhu");
-const elKelembapan = document.getElementById("val-kelembapan");
-const elStatus     = document.getElementById("val-status");
-const elStatusDesc = document.getElementById("val-status-desc");
-const elLastUpdate = document.getElementById("last-update");
-const elConnBadge  = document.getElementById("conn-badge");
-const elConnText   = document.getElementById("conn-text");
-const elTableBody  = document.getElementById("history-tbody");
+const THRESHOLDS  = window.__THRESHOLDS__;
+const DEVICE_PATH = window.__DEVICE_PATH__ || "sensor/device_01";
+const HISTORY_LIMIT = 50;
 
 /* ============================================================
-   3. Logika status
-   Semua batas bersumber dari THRESHOLDS — tidak ada nilai
-   hardcode di dalam fungsi ini.
+   2. DOM refs
    ============================================================ */
+const elSuhu        = document.getElementById("val-suhu");
+const elKelembapan  = document.getElementById("val-kelembapan");
+const elStatus      = document.getElementById("val-status");
+const elStatusDesc  = document.getElementById("val-status-desc");
+const elLastUpdate  = document.getElementById("last-update");
+const elConnBadge   = document.getElementById("conn-badge");
+const elConnText    = document.getElementById("conn-text");
+const elTableBody   = document.getElementById("history-tbody");
 
+// Gauge SVG elements
+const elGaugeTemp      = document.getElementById("gauge-temp");
+const elGaugeTempLabel = document.getElementById("gauge-temp-label");
+const elGaugeHum       = document.getElementById("gauge-hum");
+const elGaugeHumLabel  = document.getElementById("gauge-hum-label");
+
+/* ============================================================
+   3. Status logic
+   ============================================================ */
 /**
- * Tentukan status berdasarkan nilai suhu dan kelembapan.
  * @param {number} suhu
  * @param {number} kelembapan
  * @returns {{ label: string, desc: string }}
  */
 function computeStatus(suhu, kelembapan) {
     if (suhu >= THRESHOLDS.temperature_high || kelembapan >= THRESHOLDS.humidity_high) {
-        return { label: "TINGGI", desc: "Suhu atau kelembapan melebihi batas atas" };
+        return { label: "TINGGI",     desc: "Suhu atau kelembapan melebihi batas atas — perlu tindakan segera." };
     }
     if (suhu >= THRESHOLDS.temperature_warning || kelembapan >= THRESHOLDS.humidity_warning) {
-        return { label: "PERINGATAN", desc: "Suhu atau kelembapan mendekati batas atas" };
+        return { label: "PERINGATAN", desc: "Suhu atau kelembapan mendekati batas atas — pantau lebih ketat." };
     }
-    return { label: "NORMAL", desc: "Kondisi lingkungan dalam batas normal" };
+    return     { label: "NORMAL",    desc: "Kondisi lingkungan dalam batas normal." };
 }
 
 /* ============================================================
-   4. Utilitas format
+   4. Format helpers
    ============================================================ */
-
-/**
- * Format epoch milliseconds → string waktu lokal "HH:MM:SS DD/MM/YYYY"
- * @param {number} ts  epoch ms
- * @returns {string}
- */
 function formatTimestamp(ts) {
     if (!ts) return "—";
     const d = new Date(ts);
-    const pad = n => String(n).padStart(2, "0");
-    return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} `
-         + `${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()}`;
+    const p = n => String(n).padStart(2, "0");
+    return `${p(d.getDate())}/${p(d.getMonth()+1)}/${d.getFullYear()} `
+         + `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
-/**
- * Format epoch ms → label sumbu waktu ringkas "HH:MM:SS"
- * @param {number} ts
- * @returns {string}
- */
 function formatTimeShort(ts) {
     if (!ts) return "";
     const d = new Date(ts);
-    const pad = n => String(n).padStart(2, "0");
-    return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    const p = n => String(n).padStart(2, "0");
+    return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
 /* ============================================================
-   5. Update metric cards (data terkini)
+   5. Mini SVG gauge
+   Arc path: M12,64 A34,34 0 1,1 68,64  total arc ≈ 220°
+   stroke-dasharray=110 (full arc circumference approximation)
+   We map value [0..max] → offset [110..0]
    ============================================================ */
+const GAUGE_FULL = 110; // stroke-dasharray total
 
 /**
- * Perbarui tampilan card suhu, kelembapan, dan status.
- * @param {{ suhu: number, kelembapan: number, timestamp: number, status?: string }} data
+ * @param {SVGElement} pathEl
+ * @param {SVGTextElement} labelEl
+ * @param {number} value
+ * @param {number} max     — 100% of gauge
+ * @param {string} color   — stroke color
  */
+function updateGauge(pathEl, labelEl, value, max, color) {
+    if (!pathEl || !labelEl) return;
+    const ratio  = Math.min(Math.max(value / max, 0), 1);
+    const offset = GAUGE_FULL - ratio * GAUGE_FULL;
+    pathEl.style.strokeDashoffset = offset;
+    pathEl.style.stroke           = color;
+    labelEl.textContent           = isNaN(value) ? "—" : value.toFixed(1);
+}
+
+/** Pick gauge color based on thresholds */
+function gaugeColorTemp(v) {
+    if (v >= THRESHOLDS.temperature_high)    return "#dc2626";
+    if (v >= THRESHOLDS.temperature_warning) return "#d97706";
+    return "#16a34a";
+}
+
+function gaugeColorHum(v) {
+    if (v >= THRESHOLDS.humidity_high)    return "#dc2626";
+    if (v >= THRESHOLDS.humidity_warning) return "#d97706";
+    return "#3b82f6";
+}
+
+/* ============================================================
+   6. Update metric cards + gauges
+   ============================================================ */
 function updateMetricCards(data) {
     const { suhu, kelembapan, timestamp } = data;
     const status = computeStatus(suhu, kelembapan);
 
-    // Suhu
-    elSuhu.textContent = Number(suhu).toFixed(1);
+    // Remove skeleton
+    elSuhu.classList.remove("skeleton");
+    elKelembapan.classList.remove("skeleton");
 
-    // Kelembapan
+    elSuhu.textContent       = Number(suhu).toFixed(1);
     elKelembapan.textContent = Number(kelembapan).toFixed(1);
 
-    // Status
-    elStatus.textContent      = status.label;
-    elStatus.className        = `status-badge ${status.label}`;
-    elStatusDesc.textContent  = status.desc;
+    // Status pill
+    elStatus.textContent = status.label;
+    // Remove old status classes
+    elStatus.classList.remove("NORMAL", "PERINGATAN", "TINGGI");
+    elStatus.classList.add(status.label);
+    // Ensure dot exists inside pill
+    if (!elStatus.querySelector(".status-pill__dot")) {
+        const dot = document.createElement("span");
+        dot.className = "status-pill__dot";
+        elStatus.prepend(dot);
+    }
+
+    elStatusDesc.textContent = status.desc;
 
     // Last update
+    elLastUpdate.dataset.hasData = "1";
     elLastUpdate.textContent = "Diperbarui: " + formatTimestamp(timestamp);
 
-    // Koneksi aktif
+    // Gauges (max: 50°C suhu, 100% kelembapan)
+    updateGauge(elGaugeTemp, elGaugeTempLabel, Number(suhu),       50,  gaugeColorTemp(suhu));
+    updateGauge(elGaugeHum,  elGaugeHumLabel,  Number(kelembapan), 100, gaugeColorHum(kelembapan));
+
     setConnectionState(true);
 }
 
 /* ============================================================
-   6. Indikator koneksi
+   7. Connection badge
    ============================================================ */
-
 function setConnectionState(connected) {
-    elConnBadge.className = "connection-badge " + (connected ? "connected" : "disconnected");
+    elConnBadge.className = "sidebar__conn " + (connected ? "connected" : "disconnected");
     elConnText.textContent = connected ? "Terhubung" : "Tidak Terhubung";
 }
 
 /* ============================================================
-   7. Chart.js — Grafik riwayat suhu & kelembapan
+   8. Chart.js
    ============================================================ */
-
 let chart = null;
 
 function initChart() {
@@ -154,22 +179,40 @@ function initChart() {
                     label: "Suhu (°C)",
                     data: [],
                     borderColor: "#ef4444",
-                    backgroundColor: "rgba(239,68,68,.08)",
-                    borderWidth: 2,
+                    backgroundColor: (ctx) => {
+                        const g = ctx.chart.ctx.createLinearGradient(0, 0, 0, 280);
+                        g.addColorStop(0,   "rgba(239,68,68,.18)");
+                        g.addColorStop(1,   "rgba(239,68,68,0)");
+                        return g;
+                    },
+                    borderWidth: 2.5,
                     pointRadius: 3,
-                    pointHoverRadius: 5,
-                    tension: 0.3,
+                    pointBackgroundColor: "#ef4444",
+                    pointHoverRadius: 6,
+                    pointHoverBackgroundColor: "#fff",
+                    pointHoverBorderWidth: 2,
+                    tension: 0.4,
+                    fill: true,
                     yAxisID: "yTemp",
                 },
                 {
                     label: "Kelembapan (%)",
                     data: [],
                     borderColor: "#3b82f6",
-                    backgroundColor: "rgba(59,130,246,.08)",
-                    borderWidth: 2,
+                    backgroundColor: (ctx) => {
+                        const g = ctx.chart.ctx.createLinearGradient(0, 0, 0, 280);
+                        g.addColorStop(0,   "rgba(59,130,246,.14)");
+                        g.addColorStop(1,   "rgba(59,130,246,0)");
+                        return g;
+                    },
+                    borderWidth: 2.5,
                     pointRadius: 3,
-                    pointHoverRadius: 5,
-                    tension: 0.3,
+                    pointBackgroundColor: "#3b82f6",
+                    pointHoverRadius: 6,
+                    pointHoverBackgroundColor: "#fff",
+                    pointHoverBorderWidth: 2,
+                    tension: 0.4,
+                    fill: true,
                     yAxisID: "yHum",
                 },
             ],
@@ -177,157 +220,126 @@ function initChart() {
         options: {
             responsive: true,
             maintainAspectRatio: false,
-            animation: { duration: 400 },
+            animation: { duration: 500, easing: "easeInOutQuart" },
             interaction: { mode: "index", intersect: false },
             plugins: {
-                legend: {
-                    position: "top",
-                    labels: { boxWidth: 12, padding: 16 },
-                },
+                legend: { display: false }, // Custom legend via HTML
                 tooltip: {
+                    backgroundColor: "#0f172a",
+                    titleColor: "#94a3b8",
+                    bodyColor: "#f1f5f9",
+                    borderColor: "rgba(255,255,255,.08)",
+                    borderWidth: 1,
+                    padding: 12,
+                    cornerRadius: 10,
                     callbacks: {
                         label: ctx => {
                             const v = ctx.parsed.y.toFixed(1);
                             return ctx.datasetIndex === 0
-                                ? ` Suhu: ${v} °C`
-                                : ` Kelembapan: ${v} %`;
+                                ? `  Suhu: ${v} °C`
+                                : `  Kelembapan: ${v} %`;
                         },
                     },
                 },
             },
             scales: {
                 x: {
-                    grid: { color: "rgba(0,0,0,.04)" },
-                    ticks: { maxRotation: 45, color: "#64748b" },
+                    grid: { color: "rgba(0,0,0,.04)", drawBorder: false },
+                    ticks: { color: "#9ca3af", maxRotation: 40, maxTicksLimit: 10 },
+                    border: { display: false },
                 },
                 yTemp: {
                     type: "linear",
                     position: "left",
-                    title: { display: true, text: "Suhu (°C)", color: "#ef4444" },
-                    grid: { color: "rgba(0,0,0,.04)" },
-                    ticks: { color: "#64748b" },
+                    title: { display: true, text: "Suhu (°C)", color: "#ef4444", font: { size: 11, weight: "600" } },
+                    grid: { color: "rgba(0,0,0,.04)", drawBorder: false },
+                    ticks: { color: "#9ca3af" },
+                    border: { display: false },
                 },
                 yHum: {
                     type: "linear",
                     position: "right",
-                    title: { display: true, text: "Kelembapan (%)", color: "#3b82f6" },
-                    grid: { drawOnChartArea: false },
-                    ticks: { color: "#64748b" },
+                    title: { display: true, text: "Kelembapan (%)", color: "#3b82f6", font: { size: 11, weight: "600" } },
+                    grid: { drawOnChartArea: false, drawBorder: false },
+                    ticks: { color: "#9ca3af" },
+                    border: { display: false },
                 },
             },
         },
     });
 }
 
-/**
- * Perbarui data grafik dari array history.
- * @param {Array<{suhu:number, kelembapan:number, timestamp:number}>} rows
- */
 function updateChart(rows) {
     if (!chart) return;
-
-    chart.data.labels               = rows.map(r => formatTimeShort(r.timestamp));
-    chart.data.datasets[0].data     = rows.map(r => r.suhu);
-    chart.data.datasets[1].data     = rows.map(r => r.kelembapan);
-
+    chart.data.labels           = rows.map(r => formatTimeShort(r.timestamp));
+    chart.data.datasets[0].data = rows.map(r => r.suhu);
+    chart.data.datasets[1].data = rows.map(r => r.kelembapan);
     chart.update();
 }
 
 /* ============================================================
-   8. Tabel riwayat
+   9. Table
    ============================================================ */
-
-/**
- * Render tabel riwayat, baris terbaru di atas.
- * @param {Array<{suhu:number, kelembapan:number, timestamp:number}>} rows
- */
 function updateTable(rows) {
     if (!elTableBody) return;
-
-    // Urutan terbaru di atas
     const sorted = [...rows].reverse();
 
     elTableBody.innerHTML = sorted.length === 0
         ? `<tr><td colspan="4" class="table-empty">Belum ada data riwayat.</td></tr>`
-        : sorted.map(row => {
+        : sorted.map((row, i) => {
             const st = computeStatus(row.suhu, row.kelembapan);
-            return `
-            <tr>
-                <td>${formatTimestamp(row.timestamp)}</td>
-                <td class="text-right">${Number(row.suhu).toFixed(1)} °C</td>
-                <td class="text-right">${Number(row.kelembapan).toFixed(1)} %</td>
-                <td><span class="table-status ${st.label}">${st.label}</span></td>
-            </tr>`.trim();
+            const isLatest = i === 0 ? ' class="latest-row"' : '';
+            return `<tr${isLatest}>
+                <td class="muted">${formatTimestamp(row.timestamp)}</td>
+                <td class="r val-temp">${Number(row.suhu).toFixed(1)} °C</td>
+                <td class="r val-hum">${Number(row.kelembapan).toFixed(1)} %</td>
+                <td><span class="chip ${st.label}"><span class="chip__dot"></span>${st.label}</span></td>
+            </tr>`;
         }).join("");
 }
 
 /* ============================================================
-   9. Firebase listeners
+   10. Firebase listeners
    ============================================================ */
-
-/**
- * Dengarkan node `latest` untuk data real-time terkini.
- */
 function listenLatest() {
     const latestRef = ref(db, `${DEVICE_PATH}/latest`);
-
     onValue(
         latestRef,
         snapshot => {
             const data = snapshot.val();
-            if (!data) {
-                console.warn("[Dashboard] Node latest kosong atau tidak ada.");
-                setConnectionState(false);
-                return;
-            }
+            if (!data) { setConnectionState(false); return; }
             updateMetricCards(data);
         },
-        error => {
-            console.error("[Dashboard] Error membaca latest:", error.message);
-            setConnectionState(false);
-        }
+        err => { console.error("[Dashboard] latest:", err.message); setConnectionState(false); }
     );
 }
 
-/**
- * Dengarkan node `history` — ambil N data terakhir saja.
- * Menggunakan query orderByChild + limitToLast agar snapshot tidak besar.
- */
 function listenHistory() {
-    const historyRef = query(
+    const historyQ = query(
         ref(db, `${DEVICE_PATH}/history`),
         orderByChild("timestamp"),
         limitToLast(HISTORY_LIMIT)
     );
-
     onValue(
-        historyRef,
+        historyQ,
         snapshot => {
             const val = snapshot.val();
-            if (!val) {
-                updateChart([]);
-                updateTable([]);
-                return;
-            }
-
-            // Konversi object Firebase → array, urutkan ASC by timestamp
+            if (!val) { updateChart([]); updateTable([]); return; }
             const rows = Object.values(val).sort((a, b) => a.timestamp - b.timestamp);
             updateChart(rows);
             updateTable(rows);
         },
-        error => {
-            console.error("[Dashboard] Error membaca history:", error.message);
-        }
+        err => console.error("[Dashboard] history:", err.message)
     );
 }
 
 /* ============================================================
-   10. Boot
+   11. Boot
    ============================================================ */
-
 document.addEventListener("DOMContentLoaded", () => {
-    // Tampilkan skeleton awal di value cards
-    [elSuhu, elKelembapan].forEach(el => el.classList.add("skeleton"));
+    // Skeleton state
+    elSuhu.classList.add("skeleton");
+    elKelembapan.classList.add("skeleton");
 
     initChart();
     listenLatest();
