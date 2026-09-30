@@ -17,7 +17,7 @@ return [
 
     'api_key'            => env('FIREBASE_API_KEY', ''),
     'auth_domain'        => env('FIREBASE_AUTH_DOMAIN', 'smartteam-f5e2f.firebaseapp.com'),
-    'database_url'       => env('FIREBASE_DATABASE_URL', 'https://smartteam-f5e2f-default-rtdb.firebaseio.com'),
+    'database_url'       => env('FIREBASE_DATABASE_URL', 'https://smartteam-f5e2f-default-rtdb.asia-southeast1.firebasedatabase.app'),
     'project_id'         => env('FIREBASE_PROJECT_ID', 'smartteam-f5e2f'),
     'storage_bucket'     => env('FIREBASE_STORAGE_BUCKET', 'smartteam-f5e2f.firebasestorage.app'),
     'messaging_sender_id'=> env('FIREBASE_MESSAGING_SENDER_ID', '364614372910'),
