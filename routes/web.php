@@ -9,7 +9,9 @@ use App\Http\Controllers\DashboardController;
 |--------------------------------------------------------------------------
 */
 
-Route::get('/', fn() => redirect()->route('dashboard'));
+Route::get('/', function () {
+    return view('index');
+})->name('index');
 
 Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
 
