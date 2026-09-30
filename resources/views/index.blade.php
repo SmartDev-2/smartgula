@@ -406,11 +406,10 @@
     const DEFAULT_LIMITS = { tMax: 35, rhOn: 65, rhOff: 58, rhMax: 70 };
     const STATUS_LABEL = { ok: 'Aman', warn: 'Waspada', crit: 'Bahaya', off: 'Sensor mati' };
 
-    // Ambang batas deteksi kebakaran (Rate of Rise)
     const FIRE_CONFIG = {
-        rateThresholdC: 2.0,      // Kenaikan suhu >= 2 °C
-        rateTimeWindowSec: 60,    // Dalam rentang 60 detik
-        extremeTempC: 45.0        // Atau suhu menembus >= 45 °C
+        rateThresholdC: 2.0,
+        rateTimeWindowSec: 60,
+        extremeTempC: 45.0
     };
 
     /* ---------- Konfigurasi Firebase ---------- */
@@ -435,10 +434,11 @@
     const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
     const fmt = (v) => (v == null || isNaN(v)) ? '--' : String(Number(v));
 
+    // Menangani kompatibilitas nama key: sensor_1 / sensor1 dan sensor_2 / sensor2
     const state = {
         zones: [
             {
-                id: 'A', name: 'Gudang A', sensorKey: 'sensor1', ctrlKey: 'device_01', product: 'Gula kristal putih (GKP)',
+                id: 'A', name: 'Gudang A', sensorKeys: ['sensor_1', 'sensor1'], ctrlKey: 'device_01', product: 'Gula kristal putih (GKP)',
                 stock: 820, capacity: 1200, temp: null, rh: null,
                 blower: false, alarm: false, mode: 'auto', online: false,
                 limits: { ...DEFAULT_LIMITS },
@@ -447,7 +447,7 @@
                 localWriteAt: 0, alarmLocalWriteAt: 0, fireAlertTriggered: false
             },
             {
-                id: 'B', name: 'Gudang B', sensorKey: 'sensor2', ctrlKey: 'device_02', product: 'Gula kristal putih (GKP)',
+                id: 'B', name: 'Gudang B', sensorKeys: ['sensor_2', 'sensor2'], ctrlKey: 'device_02', product: 'Gula kristal putih (GKP)',
                 stock: 1010, capacity: 1200, temp: null, rh: null,
                 blower: false, alarm: false, mode: 'auto', online: false,
                 limits: { ...DEFAULT_LIMITS },
@@ -490,7 +490,7 @@
     function adviceFor(z) {
         const L = z.limits, s = z.status;
         const margin = z.temp - dewPoint(z.temp, z.rh);
-        if (z.fireAlertTriggered) return 'PERINGATAN DARURAT: Terdeteksi lonjakan suhu drastis indikasi kebakaran! Blower & alarm aktif.';
+        if (z.fireAlertTriggered) return 'PERINGATAN DARURAT: Terdeteksi lonjakan suhu drastis indikasi kebakaran!';
         if (s === 'off') return 'Sensor tidak mengirim data. Menunggu kiriman data dari modul WiFi sensor.';
         if (s === 'crit') {
             if (z.rh >= L.rhMax) return z.blower
@@ -550,7 +550,7 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(true)
                 });
-                toast(isAutoFire ? `🔥 KEBAKARAN DI ${z.name}! ALARM & BLOWER DIAKTIFKAN!` : `Alarm ${z.name} DINYALAKAN & Blower AKTIF!`);
+                toast(isAutoFire ? `🔥 KEBAKARAN DI ${z.name}! ALARM & BLOWER AKTIF!` : `Alarm ${z.name} DINYALAKAN`);
             } else {
                 z.fireAlertTriggered = false;
                 toast(`Alarm ${z.name} DIMATIKAN`);
@@ -711,16 +711,16 @@
     function updateSummary() {
         const live = state.zones.filter(z => z.online && z.temp != null);
         const avg = (k) => live.length ? live.reduce((s, z) => s + z[k], 0) / live.length : null;
-        if ($('sumTemp'))$('sumTemp').textContent = live.length ? Number(avg('temp')).toFixed(1) : '--';
-        if ($('sumRh'))$('sumRh').textContent = live.length ? Number(avg('rh')).toFixed(1) : '--';
+        if ($('sumTemp')) $('sumTemp').textContent = live.length ? Number(avg('temp')).toFixed(1) : '--';
+        if ($('sumRh')) $('sumRh').textContent = live.length ? Number(avg('rh')).toFixed(1) : '--';
         const on = state.zones.filter(z => z.blower).length;
-        if ($('sumBlower'))$('sumBlower').textContent = on;
+        if ($('sumBlower')) $('sumBlower').textContent = on;
         const bad = state.zones.filter(z => z.status === 'warn' || z.status === 'crit' || z.status === 'off' || z.fireAlertTriggered).length;
-        if ($('sumAlarm'))$('sumAlarm').textContent = bad;
-        if ($('sumAlarmWrap'))$('sumAlarmWrap').classList.toggle('is-crit', state.zones.some(z => z.status === 'crit' || z.fireAlertTriggered));
+        if ($('sumAlarm')) $('sumAlarm').textContent = bad;
+        if ($('sumAlarmWrap')) $('sumAlarmWrap').classList.toggle('is-crit', state.zones.some(z => z.status === 'crit' || z.fireAlertTriggered));
         const online = live.length;
-        if ($('netText'))$('netText').textContent = 'Sensor aktif ' + online + '/' + state.zones.length;
-        if ($('netDot'))$('netDot').classList.toggle('bad', online === 0);
+        if ($('netText')) $('netText').textContent = 'Sensor aktif ' + online + '/' + state.zones.length;
+        if ($('netDot')) $('netDot').classList.toggle('bad', online === 0);
     }
 
     function updateTable() {
@@ -876,40 +876,26 @@
         clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), 2500);
     }
 
-    async function loadHistoryFromFirebase() {
-        try {
-            const histData = await fbGet('sensor/device_01/history');
-            if (!histData) return;
-
-            const items = Object.values(histData);
-            state.zones.forEach(z => {
-                const zoneHist = [];
-                items.forEach(item => {
-                    const sensorData = item[z.sensorKey] || item;
-                    if (sensorData && sensorData.suhu != null) {
-                        zoneHist.push({
-                            t: Number(item.timestamp || Date.now()),
-                            temp: Number(sensorData.suhu),
-                            rh: Number(sensorData.kelembapan ?? sensorData.kelembaban)
-                        });
-                    }
-                });
-                z.history = zoneHist.slice(-96);
-            });
-        } catch (e) {}
-    }
-
     /* ---------- Polling Realtime Sensor & Kontrol Dua Arah ---------- */
     async function pollFirebase() {
-        // Ambil data sensor utama
         const latest = await fbGet('sensor/device_01/latest');
 
         if (latest) {
-            const ts = Number(latest.timestamp || Date.now());
+            // Timestamp bisa berupa ms atau uptime
+            let ts = Number(latest.timestamp || Date.now());
+            if (ts < 1e11) ts = Date.now(); // Jika bukan epoch ms, fallback ke waktu sekarang
 
             state.zones.forEach(z => {
-                // Mendukung sensor1/sensor2 atau fallback ke latest langsung
-                const sData = latest[z.sensorKey] || latest;
+                // Cari data sensor dengan key fleksibel: sensor_1 atau sensor1
+                let sData = null;
+                for (const key of z.sensorKeys) {
+                    if (latest[key]) {
+                        sData = latest[key];
+                        break;
+                    }
+                }
+                if (!sData) sData = latest; // Fallback
+
                 if (sData && sData.suhu != null) {
                     const newTemp = Number(sData.suhu);
                     const newRh = Number(sData.kelembapan ?? sData.kelembaban);
@@ -919,13 +905,20 @@
                     z.updatedAt = ts;
                     z.online = true;
 
+                    // Sinkronisasi status blower langsung dari sensor jika tersedia
+                    if (typeof sData.blower === 'boolean' && Date.now() - (z.localWriteAt || 0) > 4000) {
+                        z.blower = sData.blower;
+                    }
+                    if (typeof sData.alarm === 'boolean' && Date.now() - (z.alarmLocalWriteAt || 0) > 4000) {
+                        z.alarm = sData.alarm;
+                    }
+
                     const lastPoint = z.history[z.history.length - 1];
                     if (!lastPoint || lastPoint.t !== ts) {
                         z.history.push({ t: ts, temp: z.temp, rh: z.rh });
                         if (z.history.length > 96) z.history.shift();
                     }
 
-                    // Jalankan deteksi kebakaran
                     checkFireAlgorithm(z, newTemp, ts);
 
                     if (z.mode === 'auto') {
@@ -937,14 +930,10 @@
             state.zones.forEach(z => { z.online = false; });
         }
 
-        // Ambil status kontrol secara terpisah dan aman
+        // Cek kontrol/device_xx terpisah
         const ctrl01 = await fbGet('kontrol/device_01');
         const ctrl02 = await fbGet('kontrol/device_02');
-
-        const ctrlMap = {
-            'device_01': ctrl01 || {},
-            'device_02': ctrl02 || {}
-        };
+        const ctrlMap = { 'device_01': ctrl01 || {}, 'device_02': ctrl02 || {} };
 
         state.zones.forEach(z => {
             const devCtrl = ctrlMap[z.ctrlKey];
@@ -959,7 +948,39 @@
         });
     }
 
-    /* ---------- Event Klik Sakelar Blower Manual ---------- */
+    async function loadHistoryFromFirebase() {
+        try {
+            const histData = await fbGet('sensor/device_01/history');
+            if (!histData) return;
+
+            const items = Object.values(histData);
+            state.zones.forEach(z => {
+                const zoneHist = [];
+                items.forEach(item => {
+                    let sData = null;
+                    for (const key of z.sensorKeys) {
+                        if (item[key]) {
+                            sData = item[key];
+                            break;
+                        }
+                    }
+                    if (!sData) sData = item;
+
+                    if (sData && sData.suhu != null) {
+                        let t = Number(item.timestamp || Date.now());
+                        if (t < 1e11) t = Date.now();
+                        zoneHist.push({
+                            t: t,
+                            temp: Number(sData.suhu),
+                            rh: Number(sData.kelembapan ?? sData.kelembaban)
+                        });
+                    }
+                });
+                z.history = zoneHist.slice(-96);
+            });
+        } catch (e) {}
+    }
+
     if ($('blowerSwitch')) {$('blowerSwitch').addEventListener('click', () => {
             const z = state.zones.find(x => x.id === state.selected);
             if (!z) return;
@@ -999,8 +1020,7 @@
 
     if ($('clearLog'))$('clearLog').addEventListener('click', () => { state.alarms = []; renderLog(); });
 
-    /* ---------- Event Klik Tombol Alarm Manual ---------- */
-    if ($('soundBtn')) {$('soundBtn').addEventListener('click', (e) => {
+    if ($('soundBtn')) {$('soundBtn').addEventListener('click', () => {
             const z = state.zones.find(x => x.id === state.selected);
             if (!z) return;
             const nextAlarmState = !z.alarm;
@@ -1010,7 +1030,6 @@
         });
     }
 
-    /* ---------- Fitur Unduh Laporan CSV Lengkap ---------- */
     if ($('csvBtn')) {$('csvBtn').addEventListener('click', async () => {
             const z = state.zones.find(x => x.id === state.selected);
             if (!z) return;
@@ -1026,11 +1045,20 @@
 
                 if (histData) {
                     Object.values(histData).forEach(item => {
-                        const sData = item[z.sensorKey] || item;
+                        let sData = null;
+                        for (const key of z.sensorKeys) {
+                            if (item[key]) {
+                                sData = item[key];
+                                break;
+                            }
+                        }
+                        if (!sData) sData = item;
+
                         if (sData && sData.suhu != null) {
                             const tVal = Number(sData.suhu);
                             const rhVal = Number(sData.kelembapan ?? sData.kelembaban);
-                            const ts = Number(item.timestamp || Date.now());
+                            let ts = Number(item.timestamp || Date.now());
+                            if (ts < 1e11) ts = Date.now();
                             const dp = dewPoint(tVal, rhVal);
 
                             records.push({
@@ -1039,7 +1067,7 @@
                                 suhu: tVal,
                                 kelembaban: rhVal,
                                 titik_embun: isNaN(dp) ? '--' : dp.toFixed(2),
-                                blower: (item.blower != null ? item.blower : z.blower) ? 'MENYALA' : 'MATI'
+                                blower: (sData.blower != null ? sData.blower : (item.blower != null ? item.blower : z.blower)) ? 'MENYALA' : 'MATI'
                             });
                         }
                     });
