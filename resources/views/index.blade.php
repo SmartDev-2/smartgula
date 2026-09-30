@@ -329,13 +329,13 @@
                             <div class="label">Suhu</div>
                             <div class="big"><span id="dTemp">--</span><small>°C</small></div>
                             <div class="bar" id="tBar"><div class="marker" id="tMarker"></div></div>
-                            <div class="bar-scale"><span>25</span><span>35</span><span>45</span></div>
+                            <div class="bar-scale"><span>20</span><span>30</span><span>40</span></div>
                         </div>
                         <div class="readout">
                             <div class="label">Kelembaban relatif</div>
                             <div class="big"><span id="dRh">--</span><small>%</small></div>
                             <div class="bar" id="hBar"><div class="marker" id="hMarker"></div></div>
-                            <div class="bar-scale"><span>40</span><span>65</span><span>90</span></div>
+                            <div class="bar-scale"><span>40</span><span>70</span><span>95</span></div>
                         </div>
                     </div>
 
@@ -375,10 +375,10 @@
                 <div class="panel-head"><h2>Batas alarm</h2><span>Untuk gudang terpilih</span></div>
                 <div class="panel-body">
                     <div class="limits">
-                        <div><label for="inTMax">Suhu maks. (°C)</label><input id="inTMax" type="number" step="0.5" value="35"></div>
-                        <div><label for="inRhOn">Blower nyala (% RH)</label><input id="inRhOn" type="number" step="1" value="65"></div>
-                        <div><label for="inRhOff">Blower mati (% RH)</label><input id="inRhOff" type="number" step="1" value="58"></div>
-                        <div><label for="inRhMax">Alarm bahaya (% RH)</label><input id="inRhMax" type="number" step="1" value="70"></div>
+                        <div><label for="inTMax">Suhu maks. (°C)</label><input id="inTMax" type="number" step="0.5" value="30"></div>
+                        <div><label for="inRhOn">Blower nyala (% RH)</label><input id="inRhOn" type="number" step="1" value="70"></div>
+                        <div><label for="inRhOff">Blower mati (% RH)</label><input id="inRhOff" type="number" step="1" value="65"></div>
+                        <div><label for="inRhMax">Alarm bahaya (% RH)</label><input id="inRhMax" type="number" step="1" value="75"></div>
                     </div>
                     <button class="btn" id="saveLimits">Simpan batas</button>
                 </div>
@@ -393,7 +393,7 @@
 </main>
 
 <footer class="wrap">
-    Acuan awal: gula kristal paling aman disimpan di bawah 35 °C dan kelembaban di bawah 65%. Atur batas sesuai SOP pabrik Anda.
+    Acuan awal: gula kristal paling aman disimpan di bawah 30 °C dan kelembaban di bawah 70%. Atur batas sesuai SOP pabrik Anda.
 </footer>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -403,7 +403,8 @@
 @verbatim
 <script>
 (() => {
-    const DEFAULT_LIMITS = { tMax: 35, rhOn: 65, rhOff: 58, rhMax: 70 };
+    // Pengaturan batas: Suhu 30°C dan RH 70%
+    const DEFAULT_LIMITS = { tMax: 30, rhOn: 70, rhOff: 65, rhMax: 75 };
     const STATUS_LABEL = { ok: 'Aman', warn: 'Waspada', crit: 'Bahaya', off: 'Sensor mati' };
 
     const FIRE_CONFIG = {
@@ -434,7 +435,6 @@
     const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
     const fmt = (v) => (v == null || isNaN(v)) ? '--' : String(Number(v));
 
-    // Menangani kompatibilitas nama key: sensor_1 / sensor1 dan sensor_2 / sensor2
     const state = {
         zones: [
             {
@@ -483,7 +483,7 @@
         const L = z.limits;
         const margin = z.temp - dewPoint(z.temp, z.rh);
         if (z.fireAlertTriggered || z.rh >= L.rhMax || z.temp >= L.tMax) return 'crit';
-        if (z.rh >= L.rhOn || z.temp >= L.tMax - 2 || margin < 3) return 'warn';
+        if (z.rh >= L.rhOn || z.temp >= (L.tMax - 1) || margin < 3) return 'warn';
         return 'ok';
     }
 
@@ -493,14 +493,14 @@
         if (z.fireAlertTriggered) return 'PERINGATAN DARURAT: Terdeteksi lonjakan suhu drastis indikasi kebakaran!';
         if (s === 'off') return 'Sensor tidak mengirim data. Menunggu kiriman data dari modul WiFi sensor.';
         if (s === 'crit') {
-            if (z.rh >= L.rhMax) return z.blower
-                ? 'Kelembaban melewati batas bahaya. Blower sedang bekerja menurunkan kelembaban.'
-                : 'Kelembaban melewati batas bahaya dan blower mati. Segera nyalakan blower!';
+            if (z.rh >= L.rhMax || z.temp >= L.tMax) return z.blower
+                ? `Kondisi kritis (Suhu: ${fmt(z.temp)}°C, RH: ${fmt(z.rh)}%). Blower aktif menstabilkan ruangan.`
+                : `Batas aman terlewati (Suhu ≥ ${L.tMax}°C atau RH ≥ ${L.rhOn}%). Blower sedang diaktifkan.`;
             return 'Suhu gudang melebihi batas toleransi aman. Periksa ventilasi udara.';
         }
         if (s === 'warn') {
             if (margin < 3) return 'Suhu mendekati titik embun (selisih ' + (isNaN(margin) ? '--' : margin.toFixed(1)) + ' °C). Waspada kondensasi air pada karung.';
-            if (z.rh >= L.rhOn) return 'Kelembaban mulai naik. ' + (z.blower ? 'Blower sedang beroperasi.' : 'Blower belum menyala; pertimbangkan menyalakannya.');
+            if (z.rh >= L.rhOn || z.temp >= (L.tMax - 1)) return 'Parameter mulai naik mendekati batas. ' + (z.blower ? 'Blower sedang beroperasi.' : 'Blower siap menyala.');
             return 'Suhu mendekati batas maksimum. Harap pantau berkala.';
         }
         return 'Kondisi penyimpanan aman. Suhu dan kelembaban dalam batas normal.';
@@ -599,15 +599,24 @@
         }
     }
 
+    /* ---------- LOGIKA OTOMATIS: SALAH SATU MEMENUHI MAKA LANGSUNG HIDUP ---------- */
     function applyAutoRule(z, quiet) {
         const L = z.limits;
-        if (z.rh == null || isNaN(z.rh)) return;
-        if (!z.blower && z.rh >= L.rhOn) {
+        if (z.temp == null || z.rh == null || isNaN(z.temp) || isNaN(z.rh)) return;
+
+        // Syarat Hidup: Suhu >= 30 ATAU RH >= 70 (salah satu terpenuhi langsung nyala)
+        const shouldTurnOn = (z.temp >= L.tMax) || (z.rh >= L.rhOn);
+
+        // Syarat Mati: Kedua parameter sudah turun kembali ke bawah batas aman
+        const shouldTurnOff = (z.temp < (L.tMax - 1)) && (z.rh <= L.rhOff);
+
+        if (!z.blower && shouldTurnOn) {
             sendBlowerToFirebase(z, true);
-            if (!quiet) addAlarm('info', z.name + ': blower dinyalakan otomatis');
-        } else if (z.blower && z.rh <= L.rhOff) {
+            const trigger = z.temp >= L.tMax ? `suhu ${z.temp}°C` : `RH ${z.rh}%`;
+            if (!quiet) addAlarm('info', `${z.name}: blower dinyalakan otomatis (${trigger})`);
+        } else if (z.blower && shouldTurnOff) {
             sendBlowerToFirebase(z, false);
-            if (!quiet) addAlarm('info', z.name + ': blower dimatikan otomatis');
+            if (!quiet) addAlarm('info', `${z.name}: blower dimatikan otomatis (kondisi normal)`);
         }
     }
 
@@ -761,8 +770,8 @@
         if ($('dTemp'))$('dTemp').textContent = z.online ? fmt(z.temp) : '--';
         if ($('dRh'))$('dRh').textContent = z.online ? fmt(z.rh) : '--';
 
-        const pT = zoneBar('tBar', 25, 45, L.tMax - 2, L.tMax);
-        const pH = zoneBar('hBar', 40, 90, L.rhOn, L.rhMax);
+        const pT = zoneBar('tBar', 20, 40, L.tMax - 1, L.tMax);
+        const pH = zoneBar('hBar', 40, 95, L.rhOff, L.rhOn);
         if ($('tMarker'))$('tMarker').style.left = (z.temp == null || isNaN(z.temp) ? 0 : pT(z.temp)) + '%';
         if ($('hMarker'))$('hMarker').style.left = (z.rh == null || isNaN(z.rh) ? 0 : pH(z.rh)) + '%';
 
@@ -789,7 +798,7 @@
         if ($('bLast'))$('bLast').textContent = hhmm(z.lastSwitch);
         if ($('bCycles'))$('bCycles').textContent = z.cycles + ' kali';
         if ($('ruleText')) {$('ruleText').textContent = z.mode === 'auto'
-                ? 'Mode otomatis: blower menyala saat RH mencapai ' + L.rhOn + '% dan mati saat turun ke ' + L.rhOff + '%.'
+                ? `Mode otomatis: blower menyala jika suhu ≥ ${L.tMax}°C ATAU RH ≥ ${L.rhOn}%.`
                 : 'Mode manual: blower hanya diatur lewat tombol sakelar di atas.';
         }
 
@@ -881,12 +890,10 @@
         const latest = await fbGet('sensor/device_01/latest');
 
         if (latest) {
-            // Timestamp bisa berupa ms atau uptime
             let ts = Number(latest.timestamp || Date.now());
-            if (ts < 1e11) ts = Date.now(); // Jika bukan epoch ms, fallback ke waktu sekarang
+            if (ts < 1e11) ts = Date.now();
 
             state.zones.forEach(z => {
-                // Cari data sensor dengan key fleksibel: sensor_1 atau sensor1
                 let sData = null;
                 for (const key of z.sensorKeys) {
                     if (latest[key]) {
@@ -894,7 +901,7 @@
                         break;
                     }
                 }
-                if (!sData) sData = latest; // Fallback
+                if (!sData) sData = latest;
 
                 if (sData && sData.suhu != null) {
                     const newTemp = Number(sData.suhu);
@@ -905,7 +912,6 @@
                     z.updatedAt = ts;
                     z.online = true;
 
-                    // Sinkronisasi status blower langsung dari sensor jika tersedia
                     if (typeof sData.blower === 'boolean' && Date.now() - (z.localWriteAt || 0) > 4000) {
                         z.blower = sData.blower;
                     }
@@ -930,7 +936,6 @@
             state.zones.forEach(z => { z.online = false; });
         }
 
-        // Cek kontrol/device_xx terpisah
         const ctrl01 = await fbGet('kontrol/device_01');
         const ctrl02 = await fbGet('kontrol/device_02');
         const ctrlMap = { 'device_01': ctrl01 || {}, 'device_02': ctrl02 || {} };
