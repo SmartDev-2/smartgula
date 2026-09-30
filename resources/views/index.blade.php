@@ -259,7 +259,7 @@
         <div class="top-actions">
             <span class="pill" title="Status koneksi sensor Firebase"><i class="dot" id="netDot"></i><span id="netText">Menghubungkan…</span></span>
             <span class="pill" id="demoBadge">Firebase Realtime</span>
-            <button class="btn-ghost" id="soundBtn" aria-pressed="false">Alarm Gudang A: mati</button>
+            <button class="btn-ghost" id="soundBtn" aria-pressed="false">Suara sirine web: mati</button>
             <div class="clock"><span id="clockTime">--:--:--</span><small id="clockDate">&nbsp;</small></div>
         </div>
     </div>
@@ -372,7 +372,7 @@
             </section>
 
             <section class="panel">
-                <div class="panel-head"><h2>Batas alarm</h2><span>Untuk gudang terpilih</span></div>
+                <div class="panel-head"><h2>Batas alarm</h2><span id="alarmDeviceIndicator">Untuk gudang terpilih</span></div>
                 <div class="panel-body">
                     <div class="limits">
                         <div><label for="inTMax">Suhu maks. (°C)</label><input id="inTMax" type="number" step="0.5" value="30"></div>
@@ -403,7 +403,7 @@
 @verbatim
 <script>
 (() => {
-    // Pengaturan batas: Suhu 30°C dan RH 70%
+    // Pengaturan awal default (Jika di Firebase kosong)
     const DEFAULT_LIMITS = { tMax: 30, rhOn: 70, rhOff: 65, rhMax: 75 };
     const STATUS_LABEL = { ok: 'Aman', warn: 'Waspada', crit: 'Bahaya', off: 'Sensor mati' };
 
@@ -458,7 +458,8 @@
         ],
         selected: 'A',
         alarms: [],
-        chart: null
+        chart: null,
+        sound: false // Master switch buzzer web
     };
 
     function tickClock() {
@@ -482,30 +483,35 @@
         if (!z.online || z.temp == null || z.rh == null || isNaN(z.temp) || isNaN(z.rh)) return 'off';
         const L = z.limits;
         const margin = z.temp - dewPoint(z.temp, z.rh);
+        
+        // Kondisi Bahaya: Api terdeteksi ATAU Suhu > Maks ATAU RH > Maks
         if (z.fireAlertTriggered || z.rh >= L.rhMax || z.temp >= L.tMax) return 'crit';
+        // Kondisi Waspada: Suhu hampir menyentuh batas (selisih 1 derajat) atau margin embun tipis
         if (z.rh >= L.rhOn || z.temp >= (L.tMax - 1) || margin < 3) return 'warn';
+        
         return 'ok';
     }
 
     function adviceFor(z) {
         const L = z.limits, s = z.status;
         const margin = z.temp - dewPoint(z.temp, z.rh);
-        if (z.fireAlertTriggered) return 'PERINGATAN DARURAT: Terdeteksi lonjakan suhu drastis indikasi kebakaran!';
+        if (z.fireAlertTriggered) return '🔥 PERINGATAN DARURAT: Terdeteksi lonjakan suhu drastis indikasi kebakaran!';
         if (s === 'off') return 'Sensor tidak mengirim data. Menunggu kiriman data dari modul WiFi sensor.';
         if (s === 'crit') {
             if (z.rh >= L.rhMax || z.temp >= L.tMax) return z.blower
                 ? `Kondisi kritis (Suhu: ${fmt(z.temp)}°C, RH: ${fmt(z.rh)}%). Blower aktif menstabilkan ruangan.`
-                : `Batas aman terlewati (Suhu ≥ ${L.tMax}°C atau RH ≥ ${L.rhOn}%). Blower sedang diaktifkan.`;
+                : `Batas aman terlewati (Suhu ≥ ${L.tMax}°C atau RH ≥ ${L.rhMax}%). Blower akan diaktifkan otomatis.`;
             return 'Suhu gudang melebihi batas toleransi aman. Periksa ventilasi udara.';
         }
         if (s === 'warn') {
             if (margin < 3) return 'Suhu mendekati titik embun (selisih ' + (isNaN(margin) ? '--' : margin.toFixed(1)) + ' °C). Waspada kondensasi air pada karung.';
-            if (z.rh >= L.rhOn || z.temp >= (L.tMax - 1)) return 'Parameter mulai naik mendekati batas. ' + (z.blower ? 'Blower sedang beroperasi.' : 'Blower siap menyala.');
+            if (z.rh >= L.rhOn || z.temp >= (L.tMax - 1)) return 'Parameter mulai naik mendekati batas. ' + (z.blower ? 'Blower sedang beroperasi.' : 'Blower siap menyala otomatis.');
             return 'Suhu mendekati batas maksimum. Harap pantau berkala.';
         }
         return 'Kondisi penyimpanan aman. Suhu dan kelembaban dalam batas normal.';
     }
 
+    /* ---------- API REQUEST KE FIREBASE ---------- */
     async function sendBlowerToFirebase(z, stateBoolean) {
         z.localWriteAt = Date.now();
         z.blower = stateBoolean;
@@ -518,24 +524,20 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(Boolean(stateBoolean))
             });
-            toast(`${z.name}: Blower ${stateBoolean ? 'DINYALAKAN' : 'DIMATIKAN'}`);
-        } catch (e) {
-            toast(`Gagal memperbarui blower ${z.name}`);
-        }
+        } catch (e) {}
     }
 
     async function triggerAlarmAndBlower(z, alarmState, isAutoFire = false) {
         z.alarmLocalWriteAt = Date.now();
         z.alarm = alarmState;
 
+        // Jika alarm nyala otomatis/manual, paksa blower nyala juga demi safety.
         if (alarmState) {
             z.localWriteAt = Date.now();
             z.blower = true;
             z.lastSwitch = Date.now();
             z.cycles += 1;
         }
-
-        updateSoundButtonUI();
 
         try {
             await fetch(`${FIREBASE.dbUrl}/kontrol/${z.ctrlKey}/alarm.json`, {
@@ -550,27 +552,27 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(true)
                 });
-                toast(isAutoFire ? `🔥 KEBAKARAN DI ${z.name}! ALARM & BLOWER AKTIF!` : `Alarm ${z.name} DINYALAKAN`);
             } else {
-                z.fireAlertTriggered = false;
-                toast(`Alarm ${z.name} DIMATIKAN`);
+                z.fireAlertTriggered = false; // Reset status api saat alarm di matikan
             }
         } catch (e) {}
     }
 
+    /* ---------- LOGIKA DETEKSI KEBAKARAN ---------- */
     function checkFireAlgorithm(z, currentTemp, currentTs) {
         if (!z.history || z.history.length < 2) return;
 
+        // Suhu menembus batas mutlak kebakaran (Extreme)
         if (currentTemp >= FIRE_CONFIG.extremeTempC) {
             if (!z.alarm) {
                 z.fireAlertTriggered = true;
-                addAlarm('crit', `🔥 DARURAT KEBAKARAN: Suhu ${z.name} menembus ${currentTemp} °C!`);
                 triggerAlarmAndBlower(z, true, true);
-                beepFire();
+                addAlarm('crit', `🔥 DARURAT KEBAKARAN: Suhu ${z.name} menembus ${currentTemp} °C!`);
             }
             return;
         }
 
+        // Kenaikan suhu mendadak (Rate of Rise)
         const windowMs = FIRE_CONFIG.rateTimeWindowSec * 1000;
         const prevPoints = z.history.filter(p => (currentTs - p.t) <= windowMs && (currentTs - p.t) >= 10000);
 
@@ -582,50 +584,58 @@
             if (tempDiff >= FIRE_CONFIG.rateThresholdC) {
                 if (!z.alarm) {
                     z.fireAlertTriggered = true;
-                    addAlarm('crit', `🔥 PERINGATAN API ${z.name}: Suhu melonjak +${tempDiff.toFixed(1)} °C dalam ${timeDiffSec} detik!`);
                     triggerAlarmAndBlower(z, true, true);
-                    beepFire();
+                    addAlarm('crit', `🔥 PERINGATAN API ${z.name}: Suhu melonjak +${tempDiff.toFixed(1)} °C dalam ${timeDiffSec} detik!`);
                 }
             }
         }
     }
 
-    function updateSoundButtonUI() {
-        const z = state.zones.find(x => x.id === state.selected);
-        const btn = $('soundBtn');
-        if (btn && z) {
-            btn.setAttribute('aria-pressed', String(z.alarm));
-            btn.textContent = `Alarm ${z.name}: ${z.alarm ? 'NYALA' : 'mati'}`;
-        }
-    }
-
-    /* ---------- LOGIKA OTOMATIS: SALAH SATU MEMENUHI MAKA LANGSUNG HIDUP ---------- */
+    /* ---------- LOGIKA OTOMATIS: EVALUASI BLOWER & ALARM DARI BATAS (LIMITS) ---------- */
     function applyAutoRule(z, quiet) {
         const L = z.limits;
         if (z.temp == null || z.rh == null || isNaN(z.temp) || isNaN(z.rh)) return;
 
-        // Syarat Hidup: Suhu >= 30 ATAU RH >= 70 (salah satu terpenuhi langsung nyala)
-        const shouldTurnOn = (z.temp >= L.tMax) || (z.rh >= L.rhOn);
+        // 1. KONTROL ALARM BAHAYA (Triggered by Temperature or Humidity)
+        const isCritical = (z.temp >= L.tMax) || (z.rh >= L.rhMax);
+        
+        if (isCritical && !z.alarm) {
+            // Suhu atau RH melebihi batas -> Nyalakan alarm dan blower otomatis
+            triggerAlarmAndBlower(z, true, false);
+            if (!quiet) addAlarm('crit', `🚨 BAHAYA! Kondisi ${z.name} kritis. Alarm otomatis diaktifkan.`);
+        } 
+        else if (!isCritical && z.alarm && !z.fireAlertTriggered) {
+            // Jika keadaan sudah berada di bawah angka batas, matikan Alarm otomatis
+            triggerAlarmAndBlower(z, false, false);
+            if (!quiet) addAlarm('ok', `✅ ${z.name} kembali aman di bawah batas kritis. Alarm dimatikan.`);
+        }
 
-        // Syarat Mati: Kedua parameter sudah turun kembali ke bawah batas aman
+        // 2. KONTROL BLOWER (Normal operations / Pendinginan)
+        const shouldTurnOn = (z.temp >= L.tMax) || (z.rh >= L.rhOn);
         const shouldTurnOff = (z.temp < (L.tMax - 1)) && (z.rh <= L.rhOff);
 
         if (!z.blower && shouldTurnOn) {
             sendBlowerToFirebase(z, true);
-            const trigger = z.temp >= L.tMax ? `suhu ${z.temp}°C` : `RH ${z.rh}%`;
-            if (!quiet) addAlarm('info', `${z.name}: blower dinyalakan otomatis (${trigger})`);
-        } else if (z.blower && shouldTurnOff) {
+            const triggerReason = z.temp >= L.tMax ? `suhu ${z.temp}°C` : `RH ${z.rh}%`;
+            if (!quiet) addAlarm('info', `${z.name}: blower dinyalakan otomatis (${triggerReason})`);
+        } 
+        // Blower hanya boleh mati otomatis jika Alarm Bahaya sedang MATI
+        else if (z.blower && shouldTurnOff && !z.alarm && !z.fireAlertTriggered) {
             sendBlowerToFirebase(z, false);
             if (!quiet) addAlarm('info', `${z.name}: blower dimatikan otomatis (kondisi normal)`);
         }
     }
 
+    /* ---------- EVENT LOG DAN AUDIO NOTIFIKASI WEB ---------- */
     function addAlarm(level, msg) {
         state.alarms.unshift({ t: Date.now(), level, msg });
         if (state.alarms.length > 40) state.alarms.pop();
         renderLog();
-        const activeZone = state.zones.find(x => x.id === state.selected);
-        if (level === 'crit' && activeZone && activeZone.alarm) beep();
+        
+        // Peringatan audio web hanya dibunyikan jika switch Suara Web = "nyala"
+        if (level === 'crit' && state.sound) {
+            beepFire();
+        }
     }
 
     function renderLog() {
@@ -662,6 +672,7 @@
         } catch (e) {}
     }
 
+    /* ---------- DOM RENDERERS ---------- */
     const FAN_PATH = 'M0 0 C 6 -6, 8 -20, 0 -24 C -8 -20, -6 -6, 0 0 Z';
     const ROOM = { w: 367, h: 210, gap: 22, x0: 12, y0: 12 };
 
@@ -743,7 +754,7 @@
                 <td class="num">${z.online ? (isNaN(dewPoint(z.temp, z.rh)) ? '--' : dewPoint(z.temp, z.rh).toFixed(1)) + ' °C' : '--'}</td>
                 <td>${fmt(z.stock)} / ${fmt(z.capacity)} ton</td>
                 <td><span class="badge ${z.blower ? 'on' : 'off'}">${z.blower ? 'Menyala' : 'Mati'}</span> <small>${z.mode === 'auto' ? 'otomatis' : 'manual'}</small></td>
-                <td><span class="badge ${z.fireAlertTriggered ? 'crit' : z.status}">${z.fireAlertTriggered ? 'BAHAYA API' : STATUS_LABEL[z.status]}</span></td>
+                <td><span class="badge ${z.fireAlertTriggered || z.alarm ? 'crit' : z.status}">${z.fireAlertTriggered ? 'BAHAYA API' : (z.alarm ? 'ALARM AKTIF' : STATUS_LABEL[z.status])}</span></td>
                 <td>${z.online ? hhmm(z.updatedAt) : '--:--'}</td>
             </tr>`).join('');
         tb.querySelectorAll('tr').forEach(tr => tr.addEventListener('click', () => select(tr.dataset.id)));
@@ -769,6 +780,7 @@
         if ($('dProduct'))$('dProduct').textContent = z.product;
         if ($('dTemp'))$('dTemp').textContent = z.online ? fmt(z.temp) : '--';
         if ($('dRh'))$('dRh').textContent = z.online ? fmt(z.rh) : '--';
+        if ($('alarmDeviceIndicator'))$('alarmDeviceIndicator').textContent = 'Batas untuk ' + z.name;
 
         const pT = zoneBar('tBar', 20, 40, L.tMax - 1, L.tMax);
         const pH = zoneBar('hBar', 40, 95, L.rhOff, L.rhOn);
@@ -782,8 +794,8 @@
 
         const adv = $('dAdvice');
         if (adv) {
-            adv.className = 'advice ' + (z.fireAlertTriggered ? 'crit' : z.status);
-            adv.textContent = adviceFor(z);
+            adv.className = 'advice ' + (z.fireAlertTriggered || z.alarm ? 'crit' : z.status);
+            adv.textContent = z.alarm ? '🚨 ALARM SEDANG BERBUNYI! Evaluasi kondisi gudang segera!' : adviceFor(z);
         }
 
         const sw = $('blowerSwitch');
@@ -801,17 +813,16 @@
                 ? `Mode otomatis: blower menyala jika suhu ≥ ${L.tMax}°C ATAU RH ≥ ${L.rhOn}%.`
                 : 'Mode manual: blower hanya diatur lewat tombol sakelar di atas.';
         }
-
-        updateSoundButtonUI();
     }
 
+    /* Mengisi nilai di form sesuai batasan gudang yg aktif (dan mengabaikan jika sedang diketik) */
     function fillLimitInputs() {
         const z = state.zones.find(x => x.id === state.selected);
         if (!z) return;
-        if ($('inTMax'))$('inTMax').value = z.limits.tMax;
-        if ($('inRhOn'))$('inRhOn').value = z.limits.rhOn;
-        if ($('inRhOff'))$('inRhOff').value = z.limits.rhOff;
-        if ($('inRhMax'))$('inRhMax').value = z.limits.rhMax;
+        if ($('inTMax') && document.activeElement !== $('inTMax'))$('inTMax').value = z.limits.tMax;
+        if ($('inRhOn') && document.activeElement !== $('inRhOn'))$('inRhOn').value = z.limits.rhOn;
+        if ($('inRhOff') && document.activeElement !== $('inRhOff'))$('inRhOff').value = z.limits.rhOff;
+        if ($('inRhMax') && document.activeElement !== $('inRhMax'))$('inRhMax').value = z.limits.rhMax;
     }
 
     function buildChart() {
@@ -860,8 +871,11 @@
             z.prevStatus = z.status;
             z.status = computeStatus(z);
             if (z.status !== z.prevStatus) {
-                if (z.status === 'crit' && !z.fireAlertTriggered) addAlarm('crit', z.name + ': BAHAYA! RH ' + fmt(z.rh) + '%, suhu ' + fmt(z.temp) + ' °C');
-                else if (z.status === 'warn' && z.prevStatus === 'ok') addAlarm('warn', z.name + ': waspada. RH ' + fmt(z.rh) + '%, suhu ' + fmt(z.temp) + ' °C');
+                if (z.status === 'crit' && !z.fireAlertTriggered) {
+                    addAlarm('crit', z.name + ': BAHAYA! RH ' + fmt(z.rh) + '%, suhu ' + fmt(z.temp) + ' °C');
+                } else if (z.status === 'warn' && z.prevStatus === 'ok') {
+                    addAlarm('warn', z.name + ': Waspada. Batas aman akan segera terlewati.');
+                }
             }
         });
         updateSummary();
@@ -874,7 +888,6 @@
     function select(id) {
         state.selected = id;
         fillLimitInputs();
-        updateSoundButtonUI();
         renderAll();
     }
 
@@ -885,7 +898,7 @@
         clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), 2500);
     }
 
-    /* ---------- Polling Realtime Sensor & Kontrol Dua Arah ---------- */
+    /* ---------- POLLING DATA FIREBASE ---------- */
     async function pollFirebase() {
         const latest = await fbGet('sensor/device_01/latest');
 
@@ -912,13 +925,6 @@
                     z.updatedAt = ts;
                     z.online = true;
 
-                    if (typeof sData.blower === 'boolean' && Date.now() - (z.localWriteAt || 0) > 4000) {
-                        z.blower = sData.blower;
-                    }
-                    if (typeof sData.alarm === 'boolean' && Date.now() - (z.alarmLocalWriteAt || 0) > 4000) {
-                        z.alarm = sData.alarm;
-                    }
-
                     const lastPoint = z.history[z.history.length - 1];
                     if (!lastPoint || lastPoint.t !== ts) {
                         z.history.push({ t: ts, temp: z.temp, rh: z.rh });
@@ -936,6 +942,7 @@
             state.zones.forEach(z => { z.online = false; });
         }
 
+        // Cek Sinkronisasi Blower, Alarm & Limits
         const ctrl01 = await fbGet('kontrol/device_01');
         const ctrl02 = await fbGet('kontrol/device_02');
         const ctrlMap = { 'device_01': ctrl01 || {}, 'device_02': ctrl02 || {} };
@@ -943,11 +950,21 @@
         state.zones.forEach(z => {
             const devCtrl = ctrlMap[z.ctrlKey];
             if (devCtrl) {
+                // Jangan reset switch UI jika ada klik dalam 4 detik
                 if (typeof devCtrl.blower === 'boolean' && Date.now() - (z.localWriteAt || 0) > 4000) {
                     z.blower = devCtrl.blower;
                 }
                 if (typeof devCtrl.alarm === 'boolean' && Date.now() - (z.alarmLocalWriteAt || 0) > 4000) {
                     z.alarm = devCtrl.alarm;
+                }
+                // Sinkron Batasan Form (Limits) dari database
+                if (devCtrl.limits && typeof devCtrl.limits === 'object') {
+                    const prevRhMax = z.limits.rhMax;
+                    z.limits = Object.assign({}, z.limits, devCtrl.limits);
+                    // Update field di form jika ada perubahan dan tidak sedang di ketik user
+                    if (z.id === state.selected && z.limits.rhMax !== prevRhMax) {
+                        fillLimitInputs();
+                    }
                 }
             }
         });
@@ -986,6 +1003,7 @@
         } catch (e) {}
     }
 
+    /* ---------- INTERAKSI UI / KLIK TOMBOL ---------- */
     if ($('blowerSwitch')) {$('blowerSwitch').addEventListener('click', () => {
             const z = state.zones.find(x => x.id === state.selected);
             if (!z) return;
@@ -1007,31 +1025,63 @@
     if ($('modeAuto'))$('modeAuto').addEventListener('click', () => setMode('auto'));
     if ($('modeManual'))$('modeManual').addEventListener('click', () => setMode('manual'));
 
-    if ($('saveLimits')) {$('saveLimits').addEventListener('click', () => {
+    // SIMPAN BATAS DINAMIS KE FIREBASE & APPLY
+    if ($('saveLimits')) {$('saveLimits').addEventListener('click', async () => {
             const z = state.zones.find(x => x.id === state.selected);
             if (!z) return;
+
             const L = {
-                tMax: parseFloat($('inTMax').value), rhOn: parseFloat($('inRhOn').value),
-                rhOff: parseFloat($('inRhOff').value), rhMax: parseFloat($('inRhMax').value)
+                tMax: parseFloat($('inTMax').value),
+                rhOn: parseFloat($('inRhOn').value),
+                rhOff: parseFloat($('inRhOff').value),
+                rhMax: parseFloat($('inRhMax').value)
             };
+
             if (Object.values(L).some(isNaN)) return toast('Semua batas harus berupa angka.');
-            if (!(L.rhOff < L.rhOn && L.rhOn < L.rhMax)) return toast('Urutan RH harus: mati < nyala < bahaya.');
+            // Validasinya diubah <= agar lebih fleksibel
+            if (!(L.rhOff < L.rhOn && L.rhOn <= L.rhMax)) return toast('Aturan: Blower Mati < Blower Nyala <= Alarm Bahaya.');
+
             z.limits = L;
-            toast('Batas ' + z.name + ' disimpan');
-            addAlarm('info', z.name + ': batas alarm diperbarui');
-            renderAll();
+
+            const btn = $('saveLimits');
+            btn.disabled = true;
+            btn.textContent = 'Menyimpan…';
+
+            try {
+                // Simpan ke node masing-masing gudang
+                await fetch(`${FIREBASE.dbUrl}/kontrol/${z.ctrlKey}/limits.json`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(L)
+                });
+                
+                toast(`Batas alarm ${z.name} berhasil disimpan`);
+                addAlarm('info', `${z.name}: Aturan diubah (Suhu Maks: ${L.tMax}°C, Alarm: RH ${L.rhMax}%)`);
+                
+                // PENTING: Evaluasi dan terapkan batas baru saat ini juga!
+                z.prevStatus = z.status;
+                z.status = computeStatus(z);
+                if (z.mode === 'auto') {
+                    applyAutoRule(z, false);
+                }
+
+            } catch (e) {
+                toast('Gagal menyimpan batas ke database');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Simpan batas';
+                renderAll();
+            }
         });
     }
 
     if ($('clearLog'))$('clearLog').addEventListener('click', () => { state.alarms = []; renderLog(); });
 
-    if ($('soundBtn')) {$('soundBtn').addEventListener('click', () => {
-            const z = state.zones.find(x => x.id === state.selected);
-            if (!z) return;
-            const nextAlarmState = !z.alarm;
-            triggerAlarmAndBlower(z, nextAlarmState, false);
-            if (nextAlarmState) beep();
-            renderAll();
+    if ($('soundBtn')) {$('soundBtn').addEventListener('click', (e) => {
+            state.sound = !state.sound;
+            e.currentTarget.setAttribute('aria-pressed', String(state.sound));
+            e.currentTarget.textContent = 'Suara sirine web: ' + (state.sound ? 'nyala' : 'mati');
+            if (state.sound) beep();
         });
     }
 
@@ -1136,12 +1186,12 @@
 
         buildMap();
         buildChart();
-        fillLimitInputs();
-        updateSoundButtonUI();
-        renderAll();
-
+        
         await loadHistoryFromFirebase();
         await pollFirebase();
+        
+        // Panggil setelah poll pertama selesai untuk mengamankan data Limits dari DB
+        fillLimitInputs();
         renderAll();
 
         setInterval(async () => {
