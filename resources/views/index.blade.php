@@ -408,9 +408,9 @@
     const STATUS_LABEL = { ok: 'Aman', warn: 'Waspada', crit: 'Bahaya', off: 'Sensor mati' };
 
     const FIRE_CONFIG = {
-        rateThresholdC: 2.0,
-        rateTimeWindowSec: 60,
-        extremeTempC: 45.0
+        rateThresholdC: 10.0,     // Kenaikan suhu >= 10.0 °C
+        rateTimeWindowSec: 60,    // Dalam rentang 60 detik
+        extremeTempC: 45.0        // Suhu absolut untuk kebakaran
     };
 
     /* ---------- Konfigurasi Firebase ---------- */
@@ -484,9 +484,9 @@
         const L = z.limits;
         const margin = z.temp - dewPoint(z.temp, z.rh);
         
-        // Kondisi Bahaya: Api terdeteksi ATAU Suhu > Maks ATAU RH > Maks
+        // Kondisi Bahaya
         if (z.fireAlertTriggered || z.rh >= L.rhMax || z.temp >= L.tMax) return 'crit';
-        // Kondisi Waspada: Suhu hampir menyentuh batas (selisih 1 derajat) atau margin embun tipis
+        // Kondisi Waspada
         if (z.rh >= L.rhOn || z.temp >= (L.tMax - 1) || margin < 3) return 'warn';
         
         return 'ok';
@@ -1077,6 +1077,7 @@
 
     if ($('clearLog'))$('clearLog').addEventListener('click', () => { state.alarms = []; renderLog(); });
 
+    /* ---------- EVENT KLIK TOMBOL SUARA WEB MASTER (Kiri Atas) ---------- */
     if ($('soundBtn')) {$('soundBtn').addEventListener('click', (e) => {
             state.sound = !state.sound;
             e.currentTarget.setAttribute('aria-pressed', String(state.sound));
@@ -1187,10 +1188,13 @@
         buildMap();
         buildChart();
         
+        // Ambil riwayat awal dari Firebase agar data tidak kosong
         await loadHistoryFromFirebase();
-        await pollFirebase();
         
-        // Panggil setelah poll pertama selesai untuk mengamankan data Limits dari DB
+        // Polling realtime pertama untuk mengambil data sensor dan limits yang disimpan
+        await pollFirebase(); 
+        
+        // Segera setelah pollFirebase menarik Limits, masukkan nilainya ke dalam form UI
         fillLimitInputs();
         renderAll();
 
@@ -1209,4 +1213,4 @@
 </script>
 @endverbatim
 </body>
-</html>
+</html> 
